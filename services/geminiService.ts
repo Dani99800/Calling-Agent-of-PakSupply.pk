@@ -1,14 +1,31 @@
 
-import { GoogleGenAI, LiveServerMessage, Modality, Blob } from '@google/genai';
+import { GoogleGenAI, LiveServerMessage, Modality, Blob, Type, FunctionDeclaration } from '@google/genai';
 import { SYSTEM_INSTRUCTION } from '../constants';
 import { ManufacturerContact } from '../types';
 
 export interface CallHandlers {
   onTranscription: (text: string, speaker: 'agent' | 'user') => void;
   onInterrupted: () => void;
+  onOutcome: (outcome: 'agreed' | 'declined' | 'later') => void;
   onClose: () => void;
   onError: (error: string) => void;
 }
+
+const recordOutcomeTool: FunctionDeclaration = {
+  name: 'recordOutcome',
+  parameters: {
+    type: Type.OBJECT,
+    description: 'Record the customer decision at the end of the pitch.',
+    properties: {
+      outcome: {
+        type: Type.STRING,
+        description: 'The decision of the customer.',
+        enum: ['agreed', 'declined', 'later']
+      },
+    },
+    required: ['outcome'],
+  },
+};
 
 function encode(bytes: Uint8Array) {
   let binary = '';
@@ -61,16 +78,14 @@ export class GeminiCallAgent {
     let connectionTimeout: any;
 
     try {
-      console.log('Mariya Web Agent: Initializing...');
+      console.log('Mariya Agent: Connecting...');
       
       if (!process.env.API_KEY) {
-        throw new Error("API Key is missing. Please check your environment configuration.");
+        throw new Error("API Key Missing");
       }
 
-      // 1. Get Microphone
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-      // 2. Setup Audio Contexts (Mobile Friendly)
       const AudioCtx = (window as any).AudioContext || (window as any).webkitAudioContext;
       this.inputAudioContext = new AudioCtx({ sampleRate: 16000 });
       this.outputAudioContext = new AudioCtx({ sampleRate: 24000 });
@@ -80,26 +95,22 @@ export class GeminiCallAgent {
 
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       
-      const customTopicContext = contact.customScript 
-        ? `\n\n# CUSTOM SCRIPT OVERRIDE:\nTopic: ${contact.category || 'Special'}\nInstructions: ${contact.customScript}\nFocus on this instruction instead of standard PakSupply pitch.`
-        : '';
-
-      // 3. Setup Connection with Timeout
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         config: {
           responseModalities: [Modality.AUDIO],
+          tools: [{ functionDeclarations: [recordOutcomeTool] }],
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
           },
-          systemInstruction: SYSTEM_INSTRUCTION + customTopicContext,
+          systemInstruction: SYSTEM_INSTRUCTION,
           inputAudioTranscription: {},
           outputAudioTranscription: {},
         },
         callbacks: {
           onopen: () => {
             clearTimeout(connectionTimeout);
-            console.log('Mariya Web Agent: Socket Open');
+            console.log('Mariya Agent: VOIP Channel Open');
             
             const micSource = this.inputAudioContext!.createMediaStreamSource(this.stream!);
             this.processor = this.inputAudioContext!.createScriptProcessor(4096, 1, 1);
@@ -115,7 +126,7 @@ export class GeminiCallAgent {
                 mimeType: 'audio/pcm;rate=16000',
               };
               sessionPromise.then(session => session.sendRealtimeInput({ media: pcmBlob }))
-                .catch(err => console.error("Send error:", err));
+                .catch(() => {});
             };
             
             micSource.connect(this.processor);
@@ -123,13 +134,24 @@ export class GeminiCallAgent {
 
             sessionPromise.then(session => {
               session.sendRealtimeInput({ 
-                text: contact.customScript 
-                  ? `Call started with ${contact.name}. Start conversation about ${contact.category}.`
-                  : `Call started with ${contact.name} from ${contact.company}. Start the Mariya pitch.`
+                text: `Connected to ${contact.name}. Start the pitch.`
               });
             });
           },
           onmessage: async (message: LiveServerMessage) => {
+            // Handle Tool Calls (Outcome detection)
+            if (message.toolCall) {
+              for (const fc of message.toolCall.functionCalls) {
+                if (fc.name === 'recordOutcome') {
+                  const outcome = fc.args.outcome as any;
+                  handlers.onOutcome(outcome);
+                  sessionPromise.then(s => s.sendToolResponse({
+                    functionResponses: { id: fc.id, name: fc.name, response: { result: "recorded" } }
+                  }));
+                }
+              }
+            }
+
             if (message.serverContent?.outputTranscription) {
               handlers.onTranscription(message.serverContent.outputTranscription.text, 'agent');
             } else if (message.serverContent?.inputTranscription) {
@@ -165,7 +187,7 @@ export class GeminiCallAgent {
           },
           onerror: (e: any) => {
             clearTimeout(connectionTimeout);
-            handlers.onError('Connection failed. Please ensure your internet is stable and try again.');
+            handlers.onError('Network error. Check your connection.');
           },
           onclose: () => {
             clearTimeout(connectionTimeout);
@@ -174,18 +196,16 @@ export class GeminiCallAgent {
         },
       });
 
-      // 4. Set a safety timeout
       connectionTimeout = setTimeout(() => {
         this.stopCall();
-        handlers.onError("Connection Timeout: The server didn't respond in time. This usually happens if the preview environment is restricted.");
-      }, 15000);
+        handlers.onError("Timeout: Gateway took too long. Please refresh.");
+      }, 20000);
 
       this.session = await sessionPromise;
       return true;
     } catch (err: any) {
       clearTimeout(connectionTimeout);
-      console.error('Call initialization failed:', err);
-      handlers.onError(err.message || 'Call failed to start.');
+      handlers.onError(err.message || 'Connection failed.');
       return false;
     }
   }

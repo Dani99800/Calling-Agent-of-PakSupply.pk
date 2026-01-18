@@ -5,6 +5,7 @@ export interface ManufacturerContact {
   company: string;
   phone: string;
   status: 'idle' | 'calling' | 'completed' | 'failed';
+  outcome?: 'agreed' | 'declined' | 'later';
   category?: string;
   customScript?: string;
   notes?: string;
