@@ -95,6 +95,11 @@ export class GeminiCallAgent {
 
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       
+      // Inject custom script if available
+      const sessionInstruction = contact.customScript 
+        ? `${SYSTEM_INSTRUCTION}\n\n# IMPORTANT: CUSTOM SCRIPT FOR THIS CALL\nThe user has provided a specific script for this manufacturer. Follow this exactly instead of the default flow if they are different:\n"${contact.customScript}"`
+        : SYSTEM_INSTRUCTION;
+
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         config: {
@@ -103,7 +108,7 @@ export class GeminiCallAgent {
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
           },
-          systemInstruction: SYSTEM_INSTRUCTION,
+          systemInstruction: sessionInstruction,
           inputAudioTranscription: {},
           outputAudioTranscription: {},
         },
@@ -134,12 +139,11 @@ export class GeminiCallAgent {
 
             sessionPromise.then(session => {
               session.sendRealtimeInput({ 
-                text: `Connected to ${contact.name}. Start the pitch.`
+                text: `Connected to ${contact.name} from ${contact.company}. Start the conversation now.`
               });
             });
           },
           onmessage: async (message: LiveServerMessage) => {
-            // Handle Tool Calls (Outcome detection)
             if (message.toolCall) {
               for (const fc of message.toolCall.functionCalls) {
                 if (fc.name === 'recordOutcome') {
@@ -187,7 +191,7 @@ export class GeminiCallAgent {
           },
           onerror: (e: any) => {
             clearTimeout(connectionTimeout);
-            handlers.onError('Network error. Check your connection.');
+            handlers.onError('Network connection error. Please refresh and try again.');
           },
           onclose: () => {
             clearTimeout(connectionTimeout);
@@ -198,14 +202,14 @@ export class GeminiCallAgent {
 
       connectionTimeout = setTimeout(() => {
         this.stopCall();
-        handlers.onError("Timeout: Gateway took too long. Please refresh.");
-      }, 20000);
+        handlers.onError("Handshake Timeout: The gateway server did not respond. Check your internet or API key permissions.");
+      }, 25000);
 
       this.session = await sessionPromise;
       return true;
     } catch (err: any) {
       clearTimeout(connectionTimeout);
-      handlers.onError(err.message || 'Connection failed.');
+      handlers.onError(err.message || 'Call initialization failed.');
       return false;
     }
   }
