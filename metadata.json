@@ -1,0 +1,7 @@
+{
+  "name": "PakSupply Agent Pro",
+  "description": "An AI-powered calling agent specifically designed to pitch PakSupply.pk to manufacturers across Pakistan. Features high-fidelity voice interaction using Gemini Live API, direct-to-retail value proposition, and a strictly local-only brand focus.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
